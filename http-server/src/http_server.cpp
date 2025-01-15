@@ -1,7 +1,22 @@
 #include "http_server.hpp"
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
+
+static std::string vecToStr(std::vector<std::string> strs) {
+  if (strs.size() == 0) {
+    return "";
+  }
+
+  std::string str = strs[0];
+  for (size_t i = 1; i != strs.size(); ++i) {
+    str += ", " + strs[i];
+  }
+
+  return str;
+}
 
 HttpServer::HttpServer(int port)
     : port{port}, serverSocket{-1}, isRunning{false}, serverAddress{} {}
@@ -43,8 +58,12 @@ void HttpServer::down() {
   }
 }
 
-void HttpServer::registerHandler(const std::string &path, HttpMethod httpMethod,
+void HttpServer::registerHandler(std::string path, HttpMethod httpMethod,
                                  RequestHandler handler) {
+  if (path == "" || path == "/") {
+    path = "/index.html";
+  }
+
   std::string method = "";
   if (httpMethod == HttpMethod::GET) {
     method = "GET";
@@ -57,6 +76,26 @@ void HttpServer::registerHandler(const std::string &path, HttpMethod httpMethod,
   }
 
   handlers[method + path] = handler;
+}
+
+std::string HttpServer::getContentType(const RequestInfo &requestInfo) {
+  std::string extension =
+      std::filesystem::path(requestInfo.path).extension().string();
+  if (extension == ".html") {
+    return "text/html";
+  } else if (extension == ".css") {
+    return "text/css";
+  } else if (extension == ".js") {
+    return "text/javascript";
+  }
+
+  return "text/plain";
+}
+
+void HttpServer::setHeader(
+    std::unordered_map<std::string, std::vector<std::string>> &headers,
+    std::string k, std::string v) {
+  headers[k].push_back(v);
 }
 
 void HttpServer::mainLoop() {
@@ -88,15 +127,19 @@ HttpServer::RequestInfo HttpServer::parseRequest(const std::string &request) {
     lineStream >> requestInfo.method >> requestInfo.path >> requestInfo.proto;
   }
 
+  if (requestInfo.path == "" || requestInfo.path == "/") {
+    requestInfo.path = "/index.html";
+  }
+
   // headers
   while (std::getline(requestStream, line) && line != "\r") {
     std::istringstream lineStream(line);
     std::string headerName, headerValue;
     lineStream >> headerName;
-    headerName.erase(headerName.find(":"), 1);  // erase ':'
+    headerName.erase(headerName.find(":"), 1); // erase ':'
 
     while (lineStream >> headerValue) {
-      auto pos = headerValue.find(",");  // erase ','
+      auto pos = headerValue.find(","); // erase ','
       if (pos != std::string::npos) {
         headerValue.erase(pos, 1);
       }
@@ -122,8 +165,33 @@ void HttpServer::handleClient(int clientSocket) {
   buffer[bytesRead] = '\0';
   std::string request(buffer);
   RequestInfo requestInfo = parseRequest(request);
+  printRequestInfo(requestInfo);
 
-  // TESTING PART
+  auto h = handlers.find(requestInfo.method + requestInfo.path);
+  std::string response;
+  if (h != handlers.end()) {
+    response = generateResponse(h->second(requestInfo));
+  } else {
+    response = generateResponse(responseError(404, "Not found"));
+  }
+
+  send(clientSocket, response.c_str(), response.size(), 0);
+}
+
+std::string HttpServer::generateResponse(const ResponseInfo &responseInfo) {
+  std::ostringstream response;
+  response << responseInfo.proto << " " << responseInfo.statusCode << " "
+           << responseInfo.statusMessage << "\r\n";
+  for (auto const &[k, v] : responseInfo.headers) {
+    response << k << ": " << vecToStr(v) << "\r\n";
+  }
+  response << "Content-Length: " << responseInfo.body.size() << "\r\n";
+  response << "Connection: close\r\n\r\n";
+  response << responseInfo.body;
+  return response.str();
+}
+
+void HttpServer::printRequestInfo(const RequestInfo &requestInfo) {
   std::cout << "REQUEST:\n";
   std::cout << requestInfo.method << ' ' << requestInfo.path << ' '
             << requestInfo.proto << std::endl;
@@ -139,22 +207,43 @@ void HttpServer::handleClient(int clientSocket) {
   std::cout << "\nBODY:\n";
   std::cout << requestInfo.body << std::endl;
   std::cout << "---------------------------------------------\n\n";
-  // TESTING PART
+}
 
-  // TO-DO: Handlers logic
-  // std::string body;
-  // std::unordered_map<std::string, std::string> headers;
-  //
-  // std::istringstream requestStream(request);
-  // std::string method, path;
-  // requestStream >> method >> path;
-  //
-  // auto h = handlers.find(method + path);
-  // std::string response;
-  // if (h != handlers.end()) {
-  //   response = generateResponse(h->second(request));
-  // }
+HttpServer::ResponseInfo
+HttpServer::staticHandler(const HttpServer::RequestInfo &requestInfo) {
+  std::filesystem::path projectPath = std::filesystem::current_path();
+  std::string filePath = projectPath.string() + "/static" + requestInfo.path;
 
-  // TO-DO: replace request with response
-  send(clientSocket, request.c_str(), request.size(), 0);
+  std::ifstream f(filePath.c_str());
+  if (!f.is_open()) {
+    std::cerr << "Can't open file: " << filePath.c_str() << std::endl;
+    return ResponseInfo{.statusCode = 404,
+                        .proto = requestInfo.proto,
+                        .statusMessage = "Not Found",
+                        .body = ""};
+  }
+
+  std::ostringstream response;
+  response << f.rdbuf();
+
+  std::unordered_map<std::string, std::vector<std::string>> headers;
+  setHeader(headers, "Content-Type", getContentType(requestInfo));
+
+  return ResponseInfo{.statusCode = 200,
+                      .proto = requestInfo.proto,
+                      .statusMessage = "OK",
+                      .body = response.str(),
+                      .headers = headers};
+}
+
+HttpServer::ResponseInfo HttpServer::responseError(int errorCode,
+                                                   std::string errorMessage) {
+  std::string body = "<h1>" + errorMessage + "</h1>";
+  std::unordered_map<std::string, std::vector<std::string>> headers;
+  setHeader(headers, "Content-Type", "text/html");
+  return ResponseInfo{.statusCode = errorCode,
+                      .proto = "HTTP/1.1",
+                      .statusMessage = "OK",
+                      .body = body,
+                      .headers = headers};
 }

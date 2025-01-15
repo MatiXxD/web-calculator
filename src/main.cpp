@@ -19,6 +19,13 @@ int main() {
   httpServerPtr = &server;
   std::signal(SIGINT, signalHandler);
 
+  server.registerHandler("/", HttpServer::HttpMethod::GET,
+                         HttpServer::staticHandler);
+  server.registerHandler("/index.css", HttpServer::HttpMethod::GET,
+                         HttpServer::staticHandler);
+  server.registerHandler("/index.js", HttpServer::HttpMethod::GET,
+                         HttpServer::staticHandler);
+
   server.up();
 
   return 0;

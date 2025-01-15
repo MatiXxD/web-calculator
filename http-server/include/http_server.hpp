@@ -1,5 +1,5 @@
-#ifndef HTTP_SERVER_H
-#define HTTP_SERVER_H
+#ifndef _HTTP_SERVER_H_
+#define _HTTP_SERVER_H_
 
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -11,21 +11,21 @@
 #include <unordered_map>
 
 class HttpServerError : public std::exception {
- public:
+public:
   HttpServerError(const std::string &msg) : msg(msg) {}
   const char *what() const noexcept override { return msg.c_str(); }
 
- private:
+private:
   std::string msg;
 };
 
 class HttpServer {
- public:
+public:
   static constexpr int MAX_CONNECTIONS = 20;
   static constexpr int MAX_MSG_SIZE = 30720;
 
-  using RequestHandler = std::function<std::string(const std::string &req)>;
   enum class HttpMethod { GET, POST, PUT, DELETE };
+
   struct RequestInfo {
     std::string method;
     std::string path;
@@ -34,16 +34,35 @@ class HttpServer {
     std::unordered_map<std::string, std::vector<std::string>> headers;
   };
 
+  struct ResponseInfo {
+    int statusCode;
+    std::string proto;
+    std::string statusMessage;
+    std::string body;
+    std::unordered_map<std::string, std::vector<std::string>> headers;
+  };
+
+  using RequestHandler =
+      std::function<ResponseInfo(const RequestInfo &requestInfo)>;
+
   explicit HttpServer(int port);
   ~HttpServer();
 
   void up();
   void down();
 
-  void registerHandler(const std::string &path, HttpMethod httpMethod,
+  void registerHandler(std::string path, HttpMethod httpMethod,
                        RequestHandler handler);
 
- private:
+  static std::string getContentType(const RequestInfo &requestInfo);
+  static void
+  setHeader(std::unordered_map<std::string, std::vector<std::string>> &headers,
+            std::string k, std::string v);
+
+  static ResponseInfo staticHandler(const RequestInfo &requestInfo);
+  static ResponseInfo responseError(int errorCode, std::string errorMessage);
+
+private:
   bool isRunning;
   int serverSocket;
   int port;
@@ -55,9 +74,9 @@ class HttpServer {
   RequestInfo parseRequest(const std::string &request);
   void handleClient(int clientSocket);
 
-  std::string generateResponse(const std::string &body,
-                               const std::string &statusMessage = "OK",
-                               int statusCode = 200);
+  std::string generateResponse(const ResponseInfo &responseInfo);
+
+  void printRequestInfo(const RequestInfo &requestInfo);
 };
 
 #endif
